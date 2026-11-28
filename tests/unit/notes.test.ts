@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadNotes, NOTE_MAX, saveNotes } from '../../apps/scan/src/checklist.ts';
-import { blanks } from '../../apps/scan/src/nano.ts';
+import { blanks, rewriteProblem } from '../../apps/scan/src/nano.ts';
 
 const mem = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }; };
 
@@ -27,5 +27,23 @@ describe('notes per account', () => {
 describe('blanks in a draft', () => {
   it('finds each [blank] once', () => {
     expect(blanks('Dear team, [their full name] died on [date of death]. [their full name]')).toEqual(['[their full name]', '[date of death]']);
+  });
+});
+
+describe('checking a rewrite', () => {
+  const before = 'Dear team, I am writing about [their full name], who passed away on [date of death]. Please close their account.';
+  it('accepts a rewrite that keeps every blank and says "their"', () => {
+    expect(rewriteProblem(before, 'Dear team, I write regarding [their full name], who passed away on [date of death]. Kindly close their account.')).toBeNull();
+  });
+  // The three slips Nano made with the old prompt, on the live sample letters.
+  it('refuses a dropped or merged blank', () => {
+    expect(rewriteProblem(before, 'Dear team, [their full name] passed away. Please close their account, which is all I need.')).toBe('lost-blanks');
+  });
+  it('refuses a made-up blank', () => {
+    expect(rewriteProblem(before, 'Dear team, [their full name] passed away on [date of death]. Please close [his/her] account now.')).toBe('added-blanks');
+  });
+  it('refuses a guessed gender, but not words that were already there', () => {
+    expect(rewriteProblem(before, 'Dear team, [their full name] passed away on [date of death]. Please close his account now, thanks.')).toBe('gendered');
+    expect(rewriteProblem('Her account: [their full name], died on [date of death].', 'Regarding her account: [their full name], died on [date of death].')).toBeNull();
   });
 });

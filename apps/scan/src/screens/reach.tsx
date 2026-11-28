@@ -55,6 +55,8 @@ export function Reach({ a, mode, contacts, address, closing }: { a: RankedAccoun
       if (run.current !== me) return;
       const why = (e as Error).message;
       setSaid(why === 'lost-blanks' ? 'The rewrite dropped some of the [blanks], so your version is kept.'
+        : why === 'added-blanks' ? 'The rewrite made up [blanks] of its own, so your version is kept.'
+        : why === 'gendered' ? 'The rewrite guessed whether the person is a man or a woman, so your version is kept.'
         : why === 'timed-out' ? 'Couldn\u2019t rewrite it on this device in time. Your letter is unchanged.'
         : 'Couldn\u2019t rewrite it on this device. Your letter is unchanged.');
     } finally {

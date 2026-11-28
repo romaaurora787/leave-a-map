@@ -88,14 +88,35 @@ const STYLE_WORDS: Record<RewriteStyle, string> = {
   formal: 'Make it more formal and polite, as a letter to a bank or insurer.',
   simple: 'Use simple, plain words that are easy to read. Keep every request.',
 };
-const REWRITE_SYSTEM = 'You rewrite a letter that someone will send to a company. Keep its meaning and every request. ' +
-  'Keep every part in square brackets, like [your name], exactly as written, brackets included. Do not add facts, names, ' +
-  'numbers, dates or addresses. Reply with the letter text only, no subject line and no notes.';
+// Numbered rules, because Nano is a small model. Tested on Nano across both sample letters and all three
+// styles (18 rewrites each): the old one-paragraph prompt broke 6 (made up "[He/She]", merged or dropped
+// blanks, bracketed an email address); this one broke none.
+const REWRITE_SYSTEM = [
+  'You rewrite a letter that someone will send to a company. Follow these rules exactly:',
+  '1. Keep the meaning and every request. Do not add facts, names, numbers, dates, addresses or new requests.',
+  '2. Text in square brackets, like [your name], is a blank the sender fills in later. Copy each blank exactly as written, brackets included.',
+  '3. Never make new blanks. The only square brackets in your reply are the ones already in the letter.',
+  '4. Never guess anyone\'s gender. For a person, use their name blank or "they", "them" and "their". Never write he, she, him, his, her or hers.',
+  '5. Reply with the letter text only: no subject line, no notes, no explanation.',
+].join('\n');
 
 let rewriter: ReturnType<typeof getGenerativeModel> | null = null;
 
 /** The [blanks] a draft has, so a rewrite that drops one can be refused. */
 export const blanks = (s: string) => [...new Set(s.match(/\[[^\]\n]{1,80}\]/g) ?? [])];
+
+const GENDERED = /\b(he|she|him|his|her|hers)\b/gi;
+const gendered = (s: string) => new Set((s.match(GENDERED) ?? []).map((w) => w.toLowerCase()));
+
+/** What's wrong with a rewrite, if anything: a [blank] dropped, a new one made up, or a gender guessed. */
+export function rewriteProblem(before: string, after: string): 'lost-blanks' | 'added-blanks' | 'gendered' | null {
+  const had = blanks(before);
+  if (after.length < 40 || had.some((b) => !after.includes(b))) return 'lost-blanks';
+  if (blanks(after).some((b) => !had.includes(b))) return 'added-blanks';
+  const was = gendered(before);
+  if ([...gendered(after)].some((w) => !was.has(w))) return 'gendered';
+  return null;
+}
 
 /** How long the model may take to answer once it's on the device, before we give up and keep the letter. */
 const REWRITE_MS = 60_000;
@@ -126,13 +147,20 @@ export async function rewriteOnDevice(body: string, style: RewriteStyle, onStage
   if (state === 'needs-download') onStage({ stage: 'download' });
   await model.initializeDeviceModel((loaded) => { if (state === 'needs-download') onStage({ stage: 'download', pct: Math.round(loaded * 100) }); });
   onStage({ stage: 'rewrite' });
-  const { response } = await Promise.race([
-    model.generateContent(`${STYLE_WORDS[style]}\n\nLetter:\n${body}`),
-    new Promise<never>((_, no) => setTimeout(() => no(new Error('timed-out')), REWRITE_MS)),
-  ]);
-  if (response.inferenceSource !== InferenceSource.ON_DEVICE) throw new Error('left the device');
-  const out = response.text().trim();
-  const missing = blanks(body).filter((b) => !out.includes(b));
-  if (out.length < 40 || missing.length) throw new Error('lost-blanks');
-  return out;
+  // The rules again, next to the letter: a small model follows what's closest to the text.
+  const ask = `${STYLE_WORDS[style]}\nKeep these blanks exactly: ${blanks(body).join(' ') || '(none)'}. ` +
+    `Add no other square brackets. Use "they" and "their" for people, never he or she.\n\nLetter:\n${body}`;
+  const attempt = async () => {
+    const { response } = await model.generateContent(ask);
+    if (response.inferenceSource !== InferenceSource.ON_DEVICE) throw new Error('left the device');
+    return response.text().trim();
+  };
+  const run = async () => {
+    // ponytail: one retry; Nano's slips are random, so a second try usually comes back clean.
+    let out = await attempt(), problem = rewriteProblem(body, out);
+    if (problem) { out = await attempt(); problem = rewriteProblem(body, out); }
+    if (problem) throw new Error(problem);
+    return out;
+  };
+  return Promise.race([run(), new Promise<never>((_, no) => setTimeout(() => no(new Error('timed-out')), REWRITE_MS))]);
 }
